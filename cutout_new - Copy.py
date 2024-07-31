@@ -29,8 +29,10 @@ def select_video_file():
 
 
 def parse_time(s):
-    return datetime.strptime(s, '%H:%M:%S,%f')
-
+    try:
+        return datetime.strptime(s, '%H:%M:%S,%f')
+    except ValueError:
+        return datetime.strptime(s, '%H:%M:%S.%f')
 
 def compute_speaking_periods(subtitle_text):
     """
@@ -94,9 +96,8 @@ def convert_to_avi(input_video, output_folder):
     except subprocess.CalledProcessError as e:
         print(f"Error converting video to AVI: {e}")
         return None
-
+    
 def cut_video_speaking_parts(input_video, subtitle_text, output_folder):
-    avi_input_path = convert_to_avi(input_video, output_folder)
     output_path = os.path.join(output_folder, 'output.mp4')
 
     speaking_periods = compute_speaking_periods(subtitle_text)
@@ -104,14 +105,35 @@ def cut_video_speaking_parts(input_video, subtitle_text, output_folder):
     temp_files = []
     last = 0
     for i, (start, end) in enumerate(speaking_periods):
+        if i == 0:
+            # Cut at the first speaking start
+            temp_file = os.path.join(output_folder, f'temp_{i}.mp4')
+            temp_files.append(temp_file)
+            command = [
+                'ffmpeg', '-i', input_video, '-ss', str(start), '-to', str(end),
+                '-c', 'copy', '-force_key_frames', 'expr:gte(t,n_forced*2)', temp_file, '-y'
+            ]
+            subprocess.run(command, check=True)
+        else:
+            # Check if the last end is more than before the current start
+            if parse_time(end) > parse_time(speaking_periods[i-1][1]):
+                # Cut the last end and create another start
+                temp_file = os.path.join(output_folder, f'temp_{i}.mp4')
+                temp_files.append(temp_file)
+                command = [
+                    'ffmpeg', '-i', input_video, '-ss', str(parse_time(speaking_periods[i-1][1])), '-to', str(parse_time(start)),
+                    '-c', 'copy', '-force_key_frames', 'expr:gte(t,n_forced*2)', temp_file, '-y'
+                ]
+                subprocess.run(command, check=True)
             
-        temp_file = os.path.join(output_folder, f'temp_{i}.mp4')
-        temp_files.append(temp_file)
-        command = [
-            'ffmpeg', '-i', avi_input_path, '-ss', str(start), '-to', str(end),
-            '-c', 'copy', temp_file, '-y'
-        ]
-        subprocess.run(command, check=True)
+            # Cut from the current start to end
+            temp_file = os.path.join(output_folder, f'temp_{i+1}.mp4')
+            temp_files.append(temp_file)
+            command = [
+                'ffmpeg', '-i', input_video, '-ss', str(start), '-to', str(end),
+                '-c', 'copy', '-force_key_frames', 'expr:gte(t,n_forced*2)', temp_file, '-y'
+            ]
+            subprocess.run(command, check=True)
 
     concat_file = os.path.join(output_folder, 'concat_list.txt')
     with open(concat_file, 'w') as f:
@@ -122,6 +144,7 @@ def cut_video_speaking_parts(input_video, subtitle_text, output_folder):
         'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
         '-c', 'copy', output_path, '-y'
     ]
+
     subprocess.run(concat_command, check=True)
 
     # Clean up temporary files
